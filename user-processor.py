@@ -82,12 +82,12 @@ def run():
     pipeline_options.view_as(StandardOptions).runner = 'DataflowRunner'
 
     # Use the specified Pub/Sub topic
-    input_topic = "projects/backend-test-aladia/topics/mongodbCDC.users-test"
+    input_subscription = "projects/backend-test-aladia/subscriptions/mongodbCDC.users-test-sub"
 
     with beam.Pipeline(options=pipeline_options) as p:
         (
             p
-            | "Read from Pub/Sub" >> beam.io.ReadFromPubSub(topic=input_topic)
+            | "Read from Pub/Sub" >> beam.io.ReadFromPubSub(subscription=input_subscription)
             | "Log received message" >> beam.Map(lambda x: logging.info(f"Received message: {x}") or x)
             | "Decode JSON" >> beam.Map(lambda x: json.loads(x.decode('utf-8')))
             | "Log decoded message" >> beam.Map(lambda x: logging.info(f"Decoded message: {x}") or x)

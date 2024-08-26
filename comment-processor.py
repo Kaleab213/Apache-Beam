@@ -24,12 +24,12 @@ def load_to_bigquery(client, rows_to_insert, full_table_id):
 def get_latest_row(bigqueryClient, full_table_id, filter_name, filter_value):
     query = f"""
         SELECT * FROM `{full_table_id}`
-        WHERE {filter_name} = @{filter_value}
+        WHERE {filter_name} = @filter_value
         ORDER BY __row_creation_date DESC
         LIMIT 1
     """
     query_params = [
-        bigquery.ScalarQueryParameter({filter_name}, "STRING", filter_value)
+        bigquery.ScalarQueryParameter("filter_value", "STRING", filter_value)
     ]
 
     try:
@@ -38,9 +38,12 @@ def get_latest_row(bigqueryClient, full_table_id, filter_name, filter_value):
         ))
         results = query_job.result()
 
-        # Directly access the latest row
-        latest_row = dict(results[0]) if results.total_rows > 0 else None
-        return latest_row
+        # Iterate over results and return the first row
+        for row in results:
+            latest_row = dict(row)
+            return latest_row
+        
+        return None
 
     except Exception as e:
         logging.error(f"Failed to retrieve the latest activity: {e}")
@@ -50,7 +53,7 @@ def delete_from_rm_qna_activity(element, dataset_id, bigqueryClient):
     source_table_id = "source__comments"
     full_source_table_id = f"{bigqueryClient.project}.{dataset_id}.{source_table_id}"
 
-    comment_id = element['documentKey']
+    comment_id = element['documentKey']['_id']
     latest_comment = get_latest_row(bigqueryClient, full_source_table_id, '_id', comment_id)
     if not latest_comment:
         logging.error(f"Could not find the comment with id: {comment_id}")
@@ -68,7 +71,7 @@ def delete_from_rm_qna_activity(element, dataset_id, bigqueryClient):
         logging.error(f"Could not find the activity for user: {user_id}")
         return
 
-    # Update the 'questions' field by incrementing it by 1
+    # Update the 'questions' field by decrementing it by 1
     latest_activity['answers'] -= 1
     latest_activity["__row_creation_date"] = datetime.now().isoformat()
     
@@ -113,7 +116,6 @@ def insert_into_source_comments(element, dataset_id, bigqueryClient):
     full_document["__row_creation_date"] = datetime.now().isoformat()
     logging.info(f"Processing document for source__comments: {full_document}")
 
-    # Prepare the row to insert
     load_to_bigquery(bigqueryClient, [full_document], full_table_id)
     return element
     
@@ -140,7 +142,7 @@ def run():
     google_cloud_options = pipeline_options.view_as(GoogleCloudOptions)
     google_cloud_options.project = "backend-test-aladia"
     google_cloud_options.region = "us-east1"
-    google_cloud_options.job_name = 'post-processor'
+    google_cloud_options.job_name = 'comment-processor'
     google_cloud_options.staging_location = f"gs://{temporary_gcs_bucket}/staging"
     google_cloud_options.temp_location = f"gs://{temporary_gcs_bucket}/temp"
 
@@ -148,12 +150,12 @@ def run():
     pipeline_options.view_as(StandardOptions).runner = 'DataflowRunner'
 
     # Use the specified Pub/Sub topic
-    input_topic = "projects/backend-test-aladia/topics/mongodbCDC.comments-test"
+    input_subscription = "projects/backend-test-aladia/subscriptions/mongodbCDC.comments-test-sub"
 
     with beam.Pipeline(options=pipeline_options) as p:
         (
             p
-            | "Read from Pub/Sub" >> beam.io.ReadFromPubSub(topic=input_topic)
+            | "Read from Pub/Sub" >> beam.io.ReadFromPubSub(subscription=input_subscription)
             | "Log received message" >> beam.Map(lambda x: logging.info(f"Received message: {x}") or x)
             | "Decode JSON" >> beam.Map(lambda x: json.loads(x.decode('utf-8')))
             | "Log decoded message" >> beam.Map(lambda x: logging.info(f"Decoded message: {x}") or x)

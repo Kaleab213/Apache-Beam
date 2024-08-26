@@ -7,17 +7,77 @@ from datetime import datetime
 
 temporary_gcs_bucket = "bd6d6c58-5bf3-4af7-9eda-f4dcfc4650fa"
 
-source_table_id = "source__posts"
-qna_activity_table_id = 'rm__qna__activity'
+qna_activity_schema = [
+    bigquery.SchemaField('__row_creation_date', 'TIMESTAMP', mode='REQUIRED'),
+    bigquery.SchemaField('user_id', 'STRING', mode='NULLABLE'),
+    bigquery.SchemaField('answers', 'INTEGER', mode='NULLABLE'),
+    bigquery.SchemaField('questions', 'INTEGER', mode='NULLABLE'),
+    bigquery.SchemaField('bestAnswers', 'INTEGER', mode='NULLABLE'),
+    bigquery.SchemaField('solvedQuestions', 'INTEGER', mode='NULLABLE'),
+]
 
-bigqueryClient = bigquery.Client()
-dataset_id = "data_warehouse"
-full_dataset_id = f"{bigqueryClient.project}.{dataset_id}"
+post_schema = [
+    bigquery.SchemaField('_id', 'STRING', mode='REQUIRED'),
+    bigquery.SchemaField('createdAt', 'TIMESTAMP', mode='REQUIRED'),
+    bigquery.SchemaField('updatedAt', 'TIMESTAMP', mode='REQUIRED'),
+    bigquery.SchemaField('__row_creation_date', 'TIMESTAMP', mode='REQUIRED'),
+    bigquery.SchemaField('type', 'STRING', mode='NULLABLE'),
+    bigquery.SchemaField('title', 'STRING', mode='NULLABLE'),
+    bigquery.SchemaField('content', 'STRING', mode='NULLABLE'),
+    bigquery.SchemaField('status', 'STRING', mode='NULLABLE'),
+    bigquery.SchemaField('isPublic', 'BOOLEAN', mode='NULLABLE'),
+    bigquery.SchemaField(
+        'numberOf', 'RECORD', mode='NULLABLE', fields=[
+            bigquery.SchemaField('shares', 'INTEGER', mode='NULLABLE'),
+            bigquery.SchemaField('comments', 'INTEGER', mode='NULLABLE'),
+            bigquery.SchemaField(
+                'reactions', 'RECORD', mode='NULLABLE', fields=[
+                    bigquery.SchemaField('clap', 'INTEGER', mode='NULLABLE'),
+                    bigquery.SchemaField('love', 'INTEGER', mode='NULLABLE'),
+                    bigquery.SchemaField('angry', 'INTEGER', mode='NULLABLE'),
+                    bigquery.SchemaField('funny', 'INTEGER', mode='NULLABLE'),
+                    bigquery.SchemaField('sad', 'INTEGER', mode='NULLABLE'),
+                ]
+            ),
+            bigquery.SchemaField('reactionsCount', 'INTEGER', mode='NULLABLE'),
+        ]
+    ),
+    bigquery.SchemaField('rating', 'FLOAT', mode='NULLABLE'),
+    bigquery.SchemaField(
+        'owner', 'RECORD', mode='NULLABLE', fields=[
+            bigquery.SchemaField('id', 'STRING', mode='NULLABLE'),
+            bigquery.SchemaField('type', 'STRING', mode='NULLABLE'),
+        ]
+    ),
+    bigquery.SchemaField(
+        'entity', 'RECORD', mode='NULLABLE', fields=[
+            bigquery.SchemaField('id', 'STRING', mode='NULLABLE'),
+            bigquery.SchemaField('type', 'STRING', mode='NULLABLE'),
+        ]
+    ),
+    bigquery.SchemaField('files', 'STRING', mode='REPEATED'),
+    bigquery.SchemaField(
+        'mentions', 'RECORD', mode='REPEATED', fields=[
+            bigquery.SchemaField('id', 'STRING', mode='NULLABLE'),
+            bigquery.SchemaField('type', 'STRING', mode='NULLABLE'),
+        ]
+    ),
+    bigquery.SchemaField('answerId', 'STRING', mode='NULLABLE'),
+    bigquery.SchemaField('createdBy', 'STRING', mode='NULLABLE'),
+    bigquery.SchemaField(
+        'participants', 'RECORD', mode='REPEATED', fields=[
+            bigquery.SchemaField('id', 'STRING', mode='NULLABLE'),
+            bigquery.SchemaField('type', 'STRING', mode='NULLABLE'),
+        ]
+    ),
+    bigquery.SchemaField('parentId', 'JSON', mode='NULLABLE'),
+]
 
-def load_to_bigquery(client, rows_to_insert, full_table_id):
+def load_to_bigquery(client, rows_to_insert, full_table_id, schema):
     job_config = bigquery.LoadJobConfig(
-        autodetect=True,
+        schema = schema,
         write_disposition="WRITE_APPEND",
+        ignore_unknown_values=True
     )
 
     try:
@@ -26,60 +86,17 @@ def load_to_bigquery(client, rows_to_insert, full_table_id):
         logging.info(f"Successfully inserted document into table: {full_table_id}")
     except Exception as e:
         logging.error(f"Failed to insert into BigQuery, error: {e}")
-        
-def insert_into_source_posts(element, dataset_id, table_id="source__posts"):
-    client = bigquery.Client()
-    full_table_id = f"{client.project}.{dataset_id}.{table_id}"
 
-    # Extract the fullDocument field from the incoming message
-    try:
-        full_document = element['fullDocument']
-        full_document["__row_creation_date"] = datetime.now().isoformat()
-        logging.info(f"Processing document for source__posts: {full_document}")
-    except KeyError as e:
-        logging.error(f"Key error: {e}. The element structure might be different than expected: {element}")
-        return 
-
-    # Prepare the row to insert
-    load_to_bigquery(client, [full_document], full_table_id)
-    return element
-
-def update_rm_qna_activity(element):
-    full_source_table_id = f"{full_dataset_id}.{source_table_id}"
-    full_qna_activity_table_id = f"{full_dataset_id}.{qna_activity_table_id}"
-
-    # Extract the fullDocument field from the incoming message
-    full_document = element['fullDocument']
-
-    post_id = element['fullDocument']['_id']
-    latest_post = get_latest_row(full_source_table_id, '_id', post_id)
-
-    user_id = latest_post['owner']['id']
-    latest_activity = get_latest_row(full_qna_activity_table_id, 'user_id', user_id)
-
-    if not latest_post['answerId'] and full_document['answerId']:
-        latest_activity['solvedQuestions'] += 1
-    elif latest_post['answerId'] and not full_document['answerId']:
-        latest_activity['solvedQuestions'] -= 1
-    else:
-        return
-    
-    logging.info(f"Processing document for qna_activity: {full_document}")
-
-    # Prepare the row to insert
-    load_to_bigquery(bigqueryClient, [full_document], full_qna_activity_table_id)
-    return element
-
-def get_latest_row(full_table_id, filter_name, filter_value):
+def get_latest_row(bigqueryClient, full_table_id, filter_name, filter_value):
     # Retrieve the latest activity for the given user.
     query = f"""
         SELECT * FROM `{full_table_id}`
-        WHERE {filter_name} = @{filter_value}
+        WHERE {filter_name} = @filter_value
         ORDER BY __row_creation_date DESC
         LIMIT 1
     """
     query_params = [
-        bigquery.ScalarQueryParameter({filter_name}, "STRING", filter_value)
+        bigquery.ScalarQueryParameter("filter_value", "STRING", filter_value)
     ]
 
     try:
@@ -88,63 +105,138 @@ def get_latest_row(full_table_id, filter_name, filter_value):
         ))
         results = query_job.result()
 
-        # Directly access the latest row
-        latest_row = dict(results[0]) if results.total_rows > 0 else None
-        if not latest_row:
-            logging.info(f"No existing row found for: {filter_value}")
-            return
+        # Iterate over results and return the first row
+        for row in results:
+            latest_row = dict(row)
+            return latest_row
         
-        return latest_row
+        return None
 
     except Exception as e:
         logging.error(f"Failed to retrieve the latest activity: {e}")
         return None
     
-def delete_from_rm_qna_activity(element):
-    post_id = element['documentKey']
-    user_id = get_latest_row(bigqueryClient, full_source_table_id, '_id', post_id)
-    logging.info(f"Processing document for {user_id} rm__qna__activity")
-   
-     # Retrieve the latest activity for the user
-    latest_activity = get_latest_row(bigqueryClient, full_activity_table_id, "user_id", user_id)
+def delete_from_rm_qna_activity(element, dataset_id, bigqueryClient):
+    source_table_id = "source__posts"
+    full_source_table_id = f"{bigqueryClient.project}.{dataset_id}.{source_table_id}"
 
-    # Update the 'questions' field by incrementing it by 1
+    post_id = element['documentKey']['_id']
+    latest_post = get_latest_row(bigqueryClient, full_source_table_id, '_id', post_id)
+    if not latest_post:
+        logging.error(f"Could not find the post with id: {post_id}")
+        return
+
+    user_id = latest_post['owner']['id']
+    logging.info(f"Processing document for {user_id} rm__qna__activity")
+
+    qna_activity_table_id = "rm__qna__activity"
+    full_qna_activity_table_id = f"{bigqueryClient.project}.{dataset_id}.{qna_activity_table_id}"
+
+     # Retrieve the latest activity for the user
+    latest_activity = get_latest_row(bigqueryClient, full_qna_activity_table_id, "user_id", user_id)
+    if not latest_activity:
+        logging.error(f"Could not find the activity for user: {user_id}")
+        return
+    
+    # Update the 'questions' field by decrementing it by 1
     latest_activity['questions'] -= 1
+    latest_activity["__row_creation_date"] = datetime.now().isoformat()
+
     logging.info(f"Processing updated document for rm__qna__activity: {latest_activity}")
 
     # Prepare the row to insert
-    load_to_bigquery(bigqueryClient, [latest_activity], full_activity_table_id)
+    load_to_bigquery(bigqueryClient, [latest_activity], full_qna_activity_table_id, qna_activity_schema)
 
-def insert_into_rm_qna_activity(element, dataset_id):
-    client = bigquery.Client()
-    full_table_id = f"{client.project}.{dataset_id}.rm__qna__activity"
+def update_rm_qna_activity(element, dataset_id, bigqueryClient):
+    logging.info("updating the qna activity read model")
+
+    post_type = element['fullDocument']['type']
+    if post_type != 'question':
+        logging.info(f"the post is not of type question")
+        return
+    
+    source_table_id = "source__posts"
+    qna_activity_table_id = "rm__qna__activity"
+    full_source_table_id = f"{bigqueryClient.project}.{dataset_id}.{source_table_id}"
+    full_qna_activity_table_id = f"{bigqueryClient.project}.{dataset_id}.{qna_activity_table_id}"
+
+    post_id = element['fullDocument']['_id']
+    latest_post = get_latest_row(bigqueryClient, full_source_table_id, '_id', post_id)
+
+    logging.info(f"retrieved latest post: {latest_post}")
+
+    user_id = latest_post['owner']['id']
+    latest_activity = get_latest_row(bigqueryClient, full_qna_activity_table_id, 'user_id', user_id)
+
+    logging.info(f"retrieved latest activity: {latest_activity}")
+
+    if not latest_post.get('answerId') and element['fullDocument'].get('answerId'):
+        latest_activity['solvedQuestions'] += 1
+
+    elif latest_post.get('answerId') and not element['fullDocument'].get('answerId'):
+        latest_activity['solvedQuestions'] -= 1
+
+    else:
+        return
+    
+    logging.info(f"Processing document for rm__qna__activity: {latest_activity}")
+
+    # Prepare the row to insert
+    load_to_bigquery(bigqueryClient, [latest_activity], full_qna_activity_table_id, qna_activity_schema)
+
+def insert_into_rm_qna_activity(element, dataset_id, bigqueryClient):
+    post_type = element['fullDocument']['type']
+    if post_type != 'question':
+        logging.info(f"the post is not of type question")
+        return
+    
+    table_id = "rm__qna__activity"
+    full_table_id = f"{bigqueryClient.project}.{dataset_id}.{table_id}"
 
     user_id = element['fullDocument']['owner']['id']
-    logging.info(f"Processing document for {user_id} rm__qna__activity")
+    logging.info(f"Processing document for {user_id} {table_id}")
    
      # Retrieve the latest activity for the user
-    latest_activity = get_latest_row(client, full_table_id, 'user_id', user_id)
+    latest_activity = get_latest_row(bigqueryClient, full_table_id, 'user_id', user_id)
 
     # Update the 'questions' field by incrementing it by 1
     latest_activity['questions'] += 1
+    latest_activity["__row_creation_date"] = datetime.now().isoformat()
     logging.info(f"Processing updated document for rm__qna__activity: {latest_activity}")
 
     # Prepare the row to insert
-    load_to_bigquery(client, [latest_activity], full_table_id)
+    load_to_bigquery(bigqueryClient, [latest_activity], full_table_id, qna_activity_schema)
+
+def insert_into_source_posts(element, dataset_id, bigqueryClient):
+    post_type = element['fullDocument']['type']
+    if post_type != 'question':
+        logging.info(f"the post is not of type question")
+        return
     
-def insert_into_bigquery(element, dataset_id):
+    table_id = "source__posts"
+    full_table_id = f"{bigqueryClient.project}.{dataset_id}.{table_id}"
+
+    full_document = element['fullDocument']
+    full_document["__row_creation_date"] = datetime.now().isoformat()
+    logging.info(f"Processing document for source__posts: {full_document}")
+
+    load_to_bigquery(bigqueryClient, [full_document], full_table_id, post_schema)
+    
+def insert_into_bigquery(element):
+    dataset_id = "data_warehouse"
+    bigqueryClient = bigquery.Client()
     operation_type = element.get("operationType", "")
     
     if operation_type == "insert":
-        insert_into_source_posts(element, dataset_id)
-        insert_into_rm_qna_activity(element, dataset_id)
+        insert_into_source_posts(element, dataset_id, bigqueryClient)
+        insert_into_rm_qna_activity(element, dataset_id, bigqueryClient)
 
     elif operation_type == "update":
-        insert_into_source_posts(element, dataset_id)
-        update_rm_qna_activity(element, dataset_id)
+        insert_into_source_posts(element, dataset_id, bigqueryClient)
+        update_rm_qna_activity(element, dataset_id, bigqueryClient)
 
     elif operation_type == 'delete':
-        delete_from_rm_qna_activity(element, dataset_id)
+        delete_from_rm_qna_activity(element, dataset_id, bigqueryClient)
 
 def run():
     # Configure logging
@@ -165,16 +257,16 @@ def run():
     pipeline_options.view_as(StandardOptions).runner = 'DataflowRunner'
 
     # Use the specified Pub/Sub topic
-    input_topic = "projects/backend-test-aladia/topics/mongodbCDC.posts-test"
+    input_subscription = "projects/backend-test-aladia/subscriptions/mongodbCDC.posts-test-sub"
 
     with beam.Pipeline(options=pipeline_options) as p:
         (
             p
-            | "Read from Pub/Sub" >> beam.io.ReadFromPubSub(topic=input_topic)
+            | "Read from Pub/Sub" >> beam.io.ReadFromPubSub(subscription=input_subscription)
             | "Log received message" >> beam.Map(lambda x: logging.info(f"Received message: {x}") or x)
             | "Decode JSON" >> beam.Map(lambda x: json.loads(x.decode('utf-8')))
             | "Log decoded message" >> beam.Map(lambda x: logging.info(f"Decoded message: {x}") or x)
-            | "Insert to BigQuery" >> beam.Map(lambda x: insert_into_bigquery(x, dataset_id))
+            | "Insert to BigQuery" >> beam.Map(lambda x: insert_into_bigquery(x))
         )
 
     logging.info("Pipeline execution completed")
