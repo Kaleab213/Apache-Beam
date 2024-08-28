@@ -123,13 +123,17 @@ def insert_into_bigquery(element):
     dataset_id = "data_warehouse"
     bigqueryClient = bigquery.Client()
     operation_type = element.get("operationType", "")
-    
-    if operation_type == "insert":
-        insert_into_source_comments(element, dataset_id, bigqueryClient)
-        insert_into_rm_qna_activity(element, dataset_id, bigqueryClient)
 
-    elif operation_type == 'delete':
-        delete_from_rm_qna_activity(element, dataset_id, bigqueryClient)
+    try:
+        if operation_type == "insert":
+            insert_into_source_comments(element, dataset_id, bigqueryClient)
+            insert_into_rm_qna_activity(element, dataset_id, bigqueryClient)
+
+        elif operation_type == 'delete':
+            delete_from_rm_qna_activity(element, dataset_id, bigqueryClient)
+
+    except Exception as e:
+            logging.error(f"Error processing element: {element}, Error: {e}")
 
 def run():
     # Configure logging
@@ -141,7 +145,7 @@ def run():
     # Set project and other pipeline options
     google_cloud_options = pipeline_options.view_as(GoogleCloudOptions)
     google_cloud_options.project = "backend-test-aladia"
-    google_cloud_options.region = "us-east1"
+    google_cloud_options.region = "us-central1"
     google_cloud_options.job_name = 'comment-processor'
     google_cloud_options.staging_location = f"gs://{temporary_gcs_bucket}/staging"
     google_cloud_options.temp_location = f"gs://{temporary_gcs_bucket}/temp"
@@ -150,15 +154,14 @@ def run():
     pipeline_options.view_as(StandardOptions).runner = 'DataflowRunner'
 
     # Use the specified Pub/Sub topic
-    input_subscription = "projects/backend-test-aladia/subscriptions/mongodbCDC.comments-test-sub"
+    input_topic = "projects/backend-test-aladia/topics/mongodbCDC.comments-test"
 
     with beam.Pipeline(options=pipeline_options) as p:
         (
             p
-            | "Read from Pub/Sub" >> beam.io.ReadFromPubSub(subscription=input_subscription)
+            | "Read from Pub/Sub" >> beam.io.ReadFromPubSub(topic=input_topic)
             | "Log received message" >> beam.Map(lambda x: logging.info(f"Received message: {x}") or x)
             | "Decode JSON" >> beam.Map(lambda x: json.loads(x.decode('utf-8')))
-            | "Log decoded message" >> beam.Map(lambda x: logging.info(f"Decoded message: {x}") or x)
             | "Insert to BigQuery" >> beam.Map(lambda x: insert_into_bigquery(x))
         )
 

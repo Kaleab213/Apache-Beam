@@ -4,6 +4,7 @@ import logging
 import json
 from google.cloud import bigquery
 from datetime import datetime
+from apache_beam.transforms import DoFn, ParDo
 
 temporary_gcs_bucket = "bd6d6c58-5bf3-4af7-9eda-f4dcfc4650fa"
 
@@ -15,7 +16,7 @@ def load_to_bigquery(bigqueryClient, rows_to_insert, full_table_id):
 
     try:
         load_job = bigqueryClient.load_table_from_json(rows_to_insert, full_table_id, job_config=job_config)
-        load_job.result()  # Wait for the job to complete
+        load_job.result()  
         logging.info(f"Successfully inserted document into table: {full_table_id}")
     except Exception as e:
         logging.error(f"Failed to insert into BigQuery, error: {e}")
@@ -58,11 +59,15 @@ def insert_into_bigquery(element):
     dataset_id = "data_warehouse"
     bigqueryClient = bigquery.Client()
     operation_type = element.get("operationType", "")
-    
-    if operation_type == "insert":
-        insert_into_source_users(element, dataset_id, bigqueryClient)
-        insert_into_rm_qna_activity(element, dataset_id, bigqueryClient)
 
+    try:
+        if operation_type == "insert":
+            insert_into_source_users(element, dataset_id, bigqueryClient)
+            insert_into_rm_qna_activity(element, dataset_id, bigqueryClient)
+
+    except Exception as e:
+            logging.error(f"Error processing element: {element}, Error: {e}")
+        
 def run():
     # Configure logging
     logging.basicConfig(level=logging.INFO)
@@ -73,7 +78,7 @@ def run():
     # Set project and other pipeline options
     google_cloud_options = pipeline_options.view_as(GoogleCloudOptions)
     google_cloud_options.project = "backend-test-aladia"
-    google_cloud_options.region = "us-east1"
+    google_cloud_options.region = "us-central1"
     google_cloud_options.job_name = 'user-processor'
     google_cloud_options.staging_location = f"gs://{temporary_gcs_bucket}/staging"
     google_cloud_options.temp_location = f"gs://{temporary_gcs_bucket}/temp"
@@ -82,15 +87,14 @@ def run():
     pipeline_options.view_as(StandardOptions).runner = 'DataflowRunner'
 
     # Use the specified Pub/Sub topic
-    input_subscription = "projects/backend-test-aladia/subscriptions/mongodbCDC.users-test-sub"
+    input_topic = "projects/backend-test-aladia/topics/mongodbCDC.users-test"
 
     with beam.Pipeline(options=pipeline_options) as p:
         (
             p
-            | "Read from Pub/Sub" >> beam.io.ReadFromPubSub(subscription=input_subscription)
+            | "Read from Pub/Sub" >> beam.io.ReadFromPubSub(topic=input_topic)
             | "Log received message" >> beam.Map(lambda x: logging.info(f"Received message: {x}") or x)
             | "Decode JSON" >> beam.Map(lambda x: json.loads(x.decode('utf-8')))
-            | "Log decoded message" >> beam.Map(lambda x: logging.info(f"Decoded message: {x}") or x)
             | "Insert to BigQuery" >> beam.Map(lambda x: insert_into_bigquery(x))
         )
 
